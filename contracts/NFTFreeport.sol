@@ -23,8 +23,14 @@ pragma solidity ^0.5;
  *** Client uses HDWallet Seeds 
 
 
- ** Combine this idea with incentivised meta tx 
+ ** Combine this idea with incentivised meta tx -> processed in batches.
  That is the way we earn $$ on this 
+
+ Users submit metatx to meta-mempool.  Relays will propose a batch of tx from the mempool that they are considering to process.
+   Users will offer money for a batch that they want to be processed.
+
+   If a batch fails to be processed, all of those metatx are deleted and users must submit new meta-tx (using new parameters? to try and make it harder to unmix the tx)
+
  
 */
 
@@ -220,6 +226,7 @@ contract ECRecovery {
 
 contract Freeport is SafeMath,ERC721TokenReceiver,ECRecovery {
 
+  mapping (bytes32 => uint) public burnedSignatures; 
   mapping (bytes32 => uint) public usedVaultCodes; 
   //mapping (address => uint) public userNonce; 
   mapping (address => mapping (uint => bytes32)) public vaultCodes; //mapping of token addresses to mapping of account balances (token=0 means Ether)
@@ -273,7 +280,10 @@ contract Freeport is SafeMath,ERC721TokenReceiver,ECRecovery {
     
     //require that the action message data matches this request - prevent frontrun 
     require( actionMessageHash == keccak256(abi.encodePacked('withdraw', msg.sender, to, tokenContract, tokenId  )) );
-
+    
+    
+    require(burnedSignatures[actionMessageHash] == 0x0);
+    burnedSignatures[actionMessageHash] = 0x1;
 
     address recoveredPubAddr = recover(actionMessageHash,signature);
     
@@ -303,6 +313,8 @@ contract Freeport is SafeMath,ERC721TokenReceiver,ECRecovery {
     //require that the action message data matches this request - prevent frontrun 
     require( actionMessageHash == keccak256(abi.encodePacked('secretTransfer', msg.sender, newVaultCode, tokenContract, tokenId    )) );
 
+    require(burnedSignatures[actionMessageHash] == 0x0);
+    burnedSignatures[actionMessageHash] = 0x1;
 
     address recoveredPubAddr = recover(actionMessageHash,signature);
     
