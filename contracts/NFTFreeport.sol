@@ -2,6 +2,9 @@ pragma solidity ^0.5;
 
 
 /**
+    NFT Freeport V2 
+
+
   Create a new, unknown Ethereum address X which you control 
   Select a random number 'salt'
   Derive a hash digest D, where D = sha256(tokenAddress,tokenId,X,salt)
@@ -15,6 +18,9 @@ pragma solidity ^0.5;
   By doing so, while the token is inside of the freeport contract, it is impossible to know who the owner is but only the owner will be able to withdraw it at a later time.
   The owner of the token is revealed when the art is removed from the Freeport.
 
+
+
+ *** Client uses HDWallet Seeds 
  
 */
 
@@ -40,6 +46,47 @@ contract SafeMath {
 }
 
  
+
+contract ECRecovery {
+
+  /**
+   * @dev Recover signer address from a message by using their signature
+   * @param hash bytes32 message, the hash is the signed message. What is recovered is the signer address.
+   * @param sig bytes signature, the signature is generated using web3.eth.sign()
+   */
+  function recover(bytes32 hash, bytes memory sig) internal  pure returns (address) {
+    bytes32 r;
+    bytes32 s;
+    uint8 v;
+
+    //Check the signature length
+    if (sig.length != 65) {
+      return (address(0));
+    }
+
+    // Divide the signature in r, s and v variables
+    assembly {
+      r := mload(add(sig, 32))
+      s := mload(add(sig, 64))
+      v := byte(0, mload(add(sig, 96)))
+    }
+
+    // Version of signature should be 27 or 28, but 0 and 1 are also possible versions
+    if (v < 27) {
+      v += 27;
+    }
+
+    // If the version is correct return the signer address
+    if (v != 27 && v != 28) {
+      return (address(0));
+    } else {
+      return ecrecover(hash, v, r, s);
+    }
+  }
+
+}
+
+
 
 /// @title ERC-721 Non-Fungible Token Standard
        /// @dev See https://github.com/ethereum/EIPs/blob/master/EIPS/eip-721.md
@@ -392,11 +439,11 @@ contract SafeMath {
 
 
 
-contract Freeport is SafeMath,ERC721TokenReceiver {
+contract Freeport is SafeMath,ERC721TokenReceiver,ECRecovery {
 
-
-
-  mapping (address => mapping (uint => bytes32)) public tokenBalances; //mapping of token addresses to mapping of account balances (token=0 means Ether)
+  mapping (address => uint) public usedVaultCodes; 
+  //mapping (address => uint) public userNonce; 
+  mapping (address => mapping (uint => bytes32)) public vaultCodes; //mapping of token addresses to mapping of account balances (token=0 means Ether)
   
   
    event Deposit(address tokenContract, uint tokenId, bytes32 ownerDigest);
@@ -411,37 +458,53 @@ contract Freeport is SafeMath,ERC721TokenReceiver {
     revert();
   }
 
+ 
+
   //allow safe receive of ERC721 
   function onERC721Received(address _operator, address _from, uint256 _tokenId, bytes calldata _data) external returns(bytes4){
     return bytes4(keccak256("onERC721Received(address,address,uint256,bytes)"));
   }
 
 
-   
-  function depositToken(address from, address tokenContract, uint tokenId, bytes32 ownerAddressDigest) public {
-    
+    //the depositor knows the private key, SecretPrivKey1
 
-    require( tokenBalances[tokenContract][tokenId] == 0x0 );
+   // bytes32 secretDigest = keccak256( SecretPubAddr1 )
+  function depositToken(address from, address tokenContract, uint tokenId, bytes32 hashedSecretPublicAddress) public {
+    
+    require( vaultCodes[tokenContract][tokenId] == 0x0 );
+
+
+    //make sure this pub key/pub addr has never been used (enforce high security practice) 
+    require( usedVaultCodes[resultAddress] == 0x0 );
+    usedVaultCodes[resultAddress] = 0x1;
 
     ERC721(tokenContract).transferFrom(from, address(this) ,tokenId)  ;
-    
     //make sure that we received the token ? 
 
-    tokenBalances[tokenContract][tokenId] = ownerAddressDigest;
+    vaultCodes[tokenContract][tokenId] = hashedSecretPublicAddress;
 
-    emit Deposit(tokenContract, tokenId, ownerAddressDigest);
+    emit Deposit(tokenContract, tokenId, hashedSecretPublicAddress);
 
   }
 
-  function withdrawToken(address tokenContract, uint tokenId, address ownerAddress, uint256 salt) public {
+
+
+  function withdrawToken(address tokenContract, uint tokenId,address to, bytes32 actionMessageHash, bytes32 signature) public {
+
     
-    bytes32 computedOwnerDigest = keccak256( abi.encodePacked(tokenContract,tokenId,ownerAddress,salt));
+    //require that the action message data matches this request - prevent frontrun 
+    require( actionMessageHash == keccak256(abi.encodePacked('withdraw', msg.sender, to, tokenContract, tokenId  )) );
 
-    bytes32 storedOwnerDigest = tokenBalances[tokenContract][tokenId];
 
-    require(computedOwnerDigest == storedOwnerDigest);
+    bytes32 recoveredPubAddr = recover(actionMessageHash,signature);
+    
+     
+    bytes32 storedVaultCode = vaultCodes[tokenContract][tokenId];
 
-    tokenBalances[tokenContract][tokenId] = 0x0;
+
+    require(keccak256(recoveredPubAddr) == storedVaultCode);
+
+    vaultCodes[tokenContract][tokenId] = 0x0;
 
     ERC721(tokenContract).approve(ownerAddress,tokenId);
     ERC721(tokenContract).transferFrom(address(this),ownerAddress,tokenId) ;    
@@ -449,7 +512,36 @@ contract Freeport is SafeMath,ERC721TokenReceiver {
     emit Withdraw(tokenContract, tokenId, computedOwnerDigest);
      
   }
- 
+
+
+
+  /*
+      Allow the owner of a token to transfer ownership within the contract, using a personal sign that is ecrecovered 
+      Every single transaction requires a new private key + pub address pair 
+  */
+  function secretTransfer(address tokenContract, uint tokenId, bytes32 newVaultCode, bytes32 actionMessageHash, bytes32 signature){
+    
+    //require that the action message data matches this request - prevent frontrun 
+    require( actionMessageHash == keccak256(abi.encodePacked('secretTransfer', msg.sender, newVaultCode, tokenContract, tokenId    )) );
+
+
+    bytes32 recoveredPubAddr = recover(actionMessageHash,signature);
+    
      
+    bytes32 storedVaultCode = vaultCodes[tokenContract][tokenId];
+ 
+    
+    require(keccak256(recoveredPubAddr) == storedVaultCode);
+
+    require( usedVaultCodes[newVaultCode] == 0x0 );
+    usedVaultCodes[newVaultCode] = 0x1;
+
+
+    vaultCodes[tokenContract][tokenId] = newVaultCode;
+ 
+
+  }
+ 
+      
  
 }
