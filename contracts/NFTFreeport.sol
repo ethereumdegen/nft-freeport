@@ -21,6 +21,10 @@ pragma solidity ^0.5;
 
 
  *** Client uses HDWallet Seeds 
+
+
+ ** Combine this idea with incentivised meta tx 
+ That is the way we earn $$ on this 
  
 */
 
